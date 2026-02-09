@@ -280,9 +280,9 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 				gateway.Namespace, gateway.Name, controllerName)
 
 			tags := []dns.RecordTagsParam{
-				dns.RecordTagsParam(managedByTag),
-				dns.RecordTagsParam(tunnelTag),
-				dns.RecordTagsParam(gatewayTag),
+				managedByTag,
+				tunnelTag,
+				gatewayTag,
 			}
 
 			records, _ := api.DNS.Records.List(ctx, dns.RecordListParams{
@@ -328,7 +328,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 		// Clean up stale DNS records using tag-based filtering.
 		// Only scans zones that have records tagged with our tunnel ID.
-		if err := r.cleanupStaleDnsRecords(ctx, api, account, tunnel.ID, managedByTag, tunnelTag, desiredHostnames); err != nil {
+		if err := r.cleanupStaleDnsRecords(ctx, api, account, tunnelTag, desiredHostnames); err != nil {
 			log.Error(err, "Failed to cleanup stale DNS records")
 			// Non-fatal: tunnel config is already updated, DNS cleanup is best-effort
 		}
@@ -445,8 +445,6 @@ func (r *HTTPRouteReconciler) cleanupStaleDnsRecords(
 	ctx context.Context,
 	api *cloudflare.Client,
 	accountID string,
-	tunnelID string,
-	managedByTag string,
 	tunnelTag string,
 	desiredHostnames map[string]bool,
 ) error {

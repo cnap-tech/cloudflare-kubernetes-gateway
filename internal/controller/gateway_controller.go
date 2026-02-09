@@ -448,7 +448,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 
 	// For local config mode, ensure credentials Secret and config ConfigMap exist
 	if cfg.ConfigMode == ConfigModeLocal {
-		if err := r.ensureLocalConfigResources(ctx, gateway, tunnelID, account, api); err != nil {
+		if err := r.ensureLocalConfigResources(ctx, gateway, tunnelID, account); err != nil {
 			log.Error(err, "Failed to ensure local config resources")
 			return ctrl.Result{}, err
 		}
@@ -458,7 +458,7 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	var dep *appsv1.Deployment
 	if cfg.ConfigMode == ConfigModeLocal {
 		var buildErr error
-		dep, buildErr = r.deploymentForGatewayLocal(gateway, tunnelID)
+		dep, buildErr = r.deploymentForGatewayLocal(gateway)
 		if buildErr != nil {
 			log.Error(buildErr, "Failed to define Deployment for Gateway (local mode)")
 			return ctrl.Result{}, buildErr
@@ -708,7 +708,6 @@ func (r *GatewayReconciler) ensureLocalConfigResources(
 	gateway *gatewayv1.Gateway,
 	tunnelID string,
 	accountID string,
-	api *cloudflare.Client,
 ) error {
 	log := log.FromContext(ctx)
 
@@ -786,7 +785,7 @@ func (r *GatewayReconciler) ensureLocalConfigResources(
 // cloudflared reads its ingress rules from a config file (mounted ConfigMap)
 // and credentials from a Secret, instead of using --token (remote mode).
 func (r *GatewayReconciler) deploymentForGatewayLocal(
-	gateway *gatewayv1.Gateway, tunnelID string) (*appsv1.Deployment, error) {
+	gateway *gatewayv1.Gateway) (*appsv1.Deployment, error) {
 	ls := labelsForGateway(gateway.Name)
 	replicas := int32(1)
 
