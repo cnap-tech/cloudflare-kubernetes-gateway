@@ -2,6 +2,19 @@ run:
   timeout: 5m
   allow-parallel-runners: true
 
+linters:
+  enable:
+    - dupl
+    - ginkgolinter
+    - goconst
+    - gocyclo
+    - goimports
+    - misspell
+    - nakedret
+    - prealloc
+    - unconvert
+    - unparam
+
 issues:
   exclude-use-default: false
   exclude-rules:
@@ -12,26 +25,3 @@ issues:
       linters:
         - dupl
         - lll
-
-linters:
-  disable-all: true
-  enable:
-    - dupl
-    - errcheck
-    - ginkgolinter
-    - goconst
-    - gocyclo
-    - gofmt
-    - goimports
-    - gosimple
-    - govet
-    - ineffassign
-    - lll
-    - misspell
-    - nakedret
-    - prealloc
-    - staticcheck
-    - typecheck
-    - unconvert
-    - unparam
-    - unused
