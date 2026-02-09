@@ -32,6 +32,7 @@ func TestE2E(t *testing.T) {
 	opts.ConformanceProfiles = sets.New(
 		suite.GatewayHTTPConformanceProfileName,
 	)
+	opts.EnableAllSupportedFeatures = true
 	opts.Debug = true
 	opts.Implementation = conformancev1.Implementation{
 		Contact:      []string{"https://github.com/cnap-tech/cloudflare-kubernetes-gateway/issues/new/choose"},
