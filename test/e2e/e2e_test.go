@@ -16,6 +16,10 @@ const namespace = "cloudflare-gateway"
 
 var _ = Describe("controller", Ordered, func() {
 	BeforeAll(func() {
+		if os.Getenv("CLOUDFLARE_ACCOUNT_ID") == "" || os.Getenv("CLOUDFLARE_API_TOKEN") == "" {
+			Skip("Skipping E2E: CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN must be set")
+		}
+
 		By("installing prometheus operator")
 		Expect(utils.InstallPrometheusOperator()).To(Succeed())
 
