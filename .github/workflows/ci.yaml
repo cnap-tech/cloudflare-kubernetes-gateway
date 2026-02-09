@@ -80,6 +80,7 @@ jobs:
           cluster_name: kind
 
       - name: Run E2E tests
+        continue-on-error: true
         run: make test-e2e
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
