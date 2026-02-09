@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/alodex/cloudflare-kubernetes-gateway/test/utils"
+	"github.com/cnap-tech/cloudflare-kubernetes-gateway/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -34,10 +34,10 @@ func TestE2E(t *testing.T) {
 	)
 	opts.Debug = true
 	opts.Implementation = conformancev1.Implementation{
-		Contact:      []string{"https://github.com/alodex/cloudflare-kubernetes-gateway/issues/new/choose"},
-		Organization: "alodex",
+		Contact:      []string{"https://github.com/cnap-tech/cloudflare-kubernetes-gateway/issues/new/choose"},
+		Organization: "cnap-tech",
 		Project:      "cloudflare-kubernetes-gateway",
-		URL:          "https://github.com/alodex/cloudflare-kubernetes-gateway",
+		URL:          "https://github.com/cnap-tech/cloudflare-kubernetes-gateway",
 		Version:      version,
 	}
 	opts.ReportOutputPath = "standard-" + version + "-default-report.yaml"

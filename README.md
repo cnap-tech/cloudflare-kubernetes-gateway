@@ -5,7 +5,7 @@ Manage Kubernetes ingress traffic with Cloudflare Tunnels via the [Gateway API](
 ## Getting Started
 
 1. Install v1 or later of the Gateway API CRDs: `kubectl apply -k github.com/kubernetes-sigs/gateway-api//config/crd?ref=v1.0.0`
-2. Install cloudflare-kubernetes-gateway: `kubectl apply -k github.com/alodex/cloudflare-kubernetes-gateway//config/default?ref=v0.8.1` <!-- x-release-please-version -->
+2. Install cloudflare-kubernetes-gateway: `kubectl apply -k github.com/cnap-tech/cloudflare-kubernetes-gateway//config/default?ref=v0.8.1` <!-- x-release-please-version -->
 3. [Find your Cloudflare account ID](https://developers.cloudflare.com/fundamentals/setup/find-account-and-zone-ids/)
 4. [Create a Cloudflare API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) with the Account Cloudflare Tunnel Edit and Zone DNS Edit permissions
 5. Use them to create a Secret: `kubectl create secret -n cloudflare-gateway generic cloudflare --from-literal=ACCOUNT_ID=your-account-id --from-literal=TOKEN=your-token`
@@ -17,7 +17,7 @@ kind: GatewayClass
 metadata:
   name: cloudflare
 spec:
-  controllerName: github.com/alodex/cloudflare-kubernetes-gateway
+  controllerName: github.com/cnap-tech/cloudflare-kubernetes-gateway
   parametersRef:
     group: ""
     kind: Secret
@@ -59,7 +59,7 @@ spec:
       port: 80
 ```
 
-8. (optional) Install Prometheus ServiceMonitors to collect controller and cloudflared metrics: `kubectl apply -k github.com/alodex/cloudflare-kubernetes-gateway//config/prometheus?ref=v0.8.1` <!-- x-release-please-version -->
+8. (optional) Install Prometheus ServiceMonitors to collect controller and cloudflared metrics: `kubectl apply -k github.com/cnap-tech/cloudflare-kubernetes-gateway//config/prometheus?ref=v0.8.1` <!-- x-release-please-version -->
 
 ## Features
 
@@ -73,7 +73,7 @@ The v1 Core spec is not yet supported, as some features (eg header-based routing
 > [!WARNING]
 > Currently, DNS records are not deleted when route hostnames are modified or when routes are deleted.
 > Requests to orphaned hostnames respond with an HTTP 404 Not Found, rather than a DNS lookup failure.
-> For more details, see [#206](https://github.com/alodex/cloudflare-kubernetes-gateway/issues/206).
+> For more details, see [#206](https://github.com/cnap-tech/cloudflare-kubernetes-gateway/issues/206).
 
 <!-- * HTTPRoute Gateway parentRefs, without sectionName
 * HTTPRoute hostnames, but not listener filtering or precedence

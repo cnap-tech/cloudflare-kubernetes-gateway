@@ -2,7 +2,7 @@ project_name: cloudflare-kubernetes-gateway
 builds:
   - skip: true
 kos:
-  - repository: "ghcr.io/alodex/cloudflare-kubernetes-gateway"
+  - repository: "ghcr.io/cnap-tech/cloudflare-kubernetes-gateway"
     tags:
       - latest
       - "{{ .Tag }}"

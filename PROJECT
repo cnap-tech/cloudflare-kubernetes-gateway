@@ -17,7 +17,7 @@ plugins:
         runAsUser: "1001"
       version: v1
 projectName: cloudflare-kubernetes-gateway
-repo: github.com/alodex/cloudflare-kubernetes-gateway
+repo: github.com/cnap-tech/cloudflare-kubernetes-gateway
 resources:
 - controller: true
   domain: networking.k8s.io

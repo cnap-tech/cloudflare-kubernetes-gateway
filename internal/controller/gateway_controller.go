@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -31,7 +32,14 @@ import (
 
 const gatewayClassFinalizer = "cfargotunnel.com/finalizer"
 const gatewayFinalizer = "cfargotunnel.com/finalizer"
-const controllerName = "github.com/alodex/cloudflare-kubernetes-gateway"
+const controllerName = "github.com/cnap-tech/cloudflare-kubernetes-gateway"
+
+// Resource name suffixes for local config mode
+const tunnelCredentialsSuffix = "-tunnel-credentials"
+const tunnelConfigSuffix = "-tunnel-config"
+
+// ConfigMapKey is the key used in the tunnel config ConfigMap
+const TunnelConfigKey = "config.yml"
 
 // GatewayReconciler reconciles a Gateway object
 type GatewayReconciler struct {
@@ -52,8 +60,8 @@ type GatewayReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways/status,verbs=update
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;get;list;update;watch;delete
 // +kubebuilder:rbac:groups=core,resources=events,verbs=create
-// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
-// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups=core,resources=secrets,verbs=get;create;update
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;list;watch;create;update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -117,7 +125,17 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	account, api, err := InitCloudflareApi(ctx, r.Client, gatewayClass.Name)
+	cfg, err := InitCloudflareApi(ctx, r.Client, gatewayClass.Name)
+	if err != nil {
+		log.Error(err, "Failed to initialize Cloudflare API")
+		return ctrl.Result{}, err
+	}
+	if cfg == nil {
+		log.Info("GatewayClass not managed by this controller")
+		return ctrl.Result{}, nil
+	}
+	account := cfg.AccountID
+	api := cfg.Client
 
 	// Let's add a finalizer. Then, we can define some operations which should
 	// occur before the custom resource is deleted.
@@ -428,38 +446,45 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		}
 	}
 
-	res, err := api.ZeroTrust.Tunnels.Token.Get(ctx, tunnelID, zero_trust.TunnelTokenGetParams{
-		AccountID: cloudflare.String(account),
-	})
-	if err != nil {
-		log.Error(err, "Failed to get tunnel token")
-		return ctrl.Result{}, err
-	}
-	token := string((*res).(shared.UnionString))
-
-	// Check if the deployment already exists, if not create a new one
-	found := &appsv1.Deployment{}
-	err = r.Get(ctx, types.NamespacedName{Name: gateway.Name, Namespace: gateway.Namespace}, found)
-	// TODO update existing deployment eg image changes
-	if err != nil && apierrors.IsNotFound(err) {
-		// Define a new deployment
-		dep, err := r.deploymentForGateway(gateway, token)
-		if err != nil {
-			log.Error(err, "Failed to define new Deployment resource for Gateway")
-
-			// The following implementation will update the status
-			meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{Type: string(gatewayv1.GatewayConditionAccepted),
-				Status: metav1.ConditionFalse, Reason: "Reconciling", ObservedGeneration: gateway.Generation,
-				Message: fmt.Sprintf("Failed to create Deployment for the custom resource (%s): (%s)", gateway.Name, err)})
-
-			if err := r.Status().Update(ctx, gateway); err != nil {
-				log.Error(err, "Failed to update Gateway status")
-				return ctrl.Result{}, err
-			}
-
+	// For local config mode, ensure credentials Secret and config ConfigMap exist
+	if cfg.ConfigMode == ConfigModeLocal {
+		if err := r.ensureLocalConfigResources(ctx, gateway, tunnelID, account, api); err != nil {
+			log.Error(err, "Failed to ensure local config resources")
 			return ctrl.Result{}, err
 		}
+	}
 
+	// Build the deployment spec based on config mode
+	var dep *appsv1.Deployment
+	if cfg.ConfigMode == ConfigModeLocal {
+		var buildErr error
+		dep, buildErr = r.deploymentForGatewayLocal(gateway, tunnelID)
+		if buildErr != nil {
+			log.Error(buildErr, "Failed to define Deployment for Gateway (local mode)")
+			return ctrl.Result{}, buildErr
+		}
+	} else {
+		res, err := api.ZeroTrust.Tunnels.Token.Get(ctx, tunnelID, zero_trust.TunnelTokenGetParams{
+			AccountID: cloudflare.String(account),
+		})
+		if err != nil {
+			log.Error(err, "Failed to get tunnel token")
+			return ctrl.Result{}, err
+		}
+		token := string((*res).(shared.UnionString))
+
+		var buildErr error
+		dep, buildErr = r.deploymentForGateway(gateway, token)
+		if buildErr != nil {
+			log.Error(buildErr, "Failed to define Deployment for Gateway (remote mode)")
+			return ctrl.Result{}, buildErr
+		}
+	}
+
+	// Create or update the deployment
+	found := &appsv1.Deployment{}
+	err = r.Get(ctx, types.NamespacedName{Name: gateway.Name, Namespace: gateway.Namespace}, found)
+	if err != nil && apierrors.IsNotFound(err) {
 		log.Info("Creating a new Deployment",
 			"Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 		if err = r.Create(ctx, dep); err != nil {
@@ -467,34 +492,11 @@ func (r *GatewayReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 				"Deployment.Namespace", dep.Namespace, "Deployment.Name", dep.Name)
 			return ctrl.Result{}, err
 		}
-
-		// Deployment created successfully
-		// We will requeue the reconciliation so that we can ensure the state
-		// and move forward for the next operations
 		return ctrl.Result{RequeueAfter: time.Minute}, nil
 	} else if err != nil {
 		log.Error(err, "Failed to get Deployment")
-		// Let's return the error for the reconciliation be re-trigged again
 		return ctrl.Result{}, err
 	} else {
-		// Define a new deployment
-		dep, err := r.deploymentForGateway(gateway, token)
-		if err != nil {
-			log.Error(err, "Failed to define new Deployment resource for Gateway")
-
-			// The following implementation will update the status
-			meta.SetStatusCondition(&gateway.Status.Conditions, metav1.Condition{Type: string(gatewayv1.GatewayConditionAccepted),
-				Status: metav1.ConditionFalse, Reason: "Reconciling", ObservedGeneration: gateway.Generation,
-				Message: fmt.Sprintf("Failed to update Deployment for the custom resource (%s): (%s)", gateway.Name, err)})
-
-			if err := r.Status().Update(ctx, gateway); err != nil {
-				log.Error(err, "Failed to update Gateway status")
-				return ctrl.Result{}, err
-			}
-
-			return ctrl.Result{}, err
-		}
-
 		if err := r.Update(ctx, dep); err != nil {
 			if strings.Contains(err.Error(), "apply your changes to the latest version and try again") {
 				log.Info("Conflict when updating Deployment, retrying")
@@ -693,6 +695,222 @@ func (r *GatewayReconciler) deploymentForGateway(
 
 	// Set the ownerRef for the Deployment
 	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/owners-dependents/
+	if err := ctrl.SetControllerReference(gateway, dep, r.Scheme); err != nil {
+		return nil, err
+	}
+	return dep, nil
+}
+
+// ensureLocalConfigResources creates or updates the credentials Secret and
+// config ConfigMap needed for local tunnel config mode.
+func (r *GatewayReconciler) ensureLocalConfigResources(
+	ctx context.Context,
+	gateway *gatewayv1.Gateway,
+	tunnelID string,
+	accountID string,
+	api *cloudflare.Client,
+) error {
+	log := log.FromContext(ctx)
+
+	// Build the credentials JSON for cloudflared.
+	// The credentials file contains AccountTag, TunnelSecret, and TunnelID.
+	// TunnelSecret must match what was used during tunnel creation.
+	credentialsJSON, err := json.Marshal(map[string]string{
+		"AccountTag":   accountID,
+		"TunnelSecret": "AQIDBAUGBwgBAgMEBQYHCAECAwQFBgcIAQIDBAUGBwg=", // matches tunnel creation secret
+		"TunnelID":     tunnelID,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to marshal credentials: %w", err)
+	}
+
+	// Create or update the credentials Secret
+	credSecretName := gateway.Name + tunnelCredentialsSuffix
+	credSecret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      credSecretName,
+			Namespace: gateway.Namespace,
+		},
+	}
+
+	existingSecret := &corev1.Secret{}
+	if err := r.Get(ctx, types.NamespacedName{Name: credSecretName, Namespace: gateway.Namespace}, existingSecret); err != nil {
+		if apierrors.IsNotFound(err) {
+			credSecret.Data = map[string][]byte{
+				"credentials.json": credentialsJSON,
+			}
+			if err := ctrl.SetControllerReference(gateway, credSecret, r.Scheme); err != nil {
+				return err
+			}
+			log.Info("Creating tunnel credentials Secret", "name", credSecretName)
+			if err := r.Create(ctx, credSecret); err != nil {
+				return fmt.Errorf("failed to create credentials secret: %w", err)
+			}
+		} else {
+			return err
+		}
+	}
+
+	// Create or update the config ConfigMap (initial config with catch-all only)
+	configMapName := gateway.Name + tunnelConfigSuffix
+	initialConfig := fmt.Sprintf("tunnel: %s\ncredentials-file: /etc/cloudflared/credentials/credentials.json\ningress:\n  - service: http_status:404\n", tunnelID)
+
+	existingCM := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: gateway.Namespace}, existingCM); err != nil {
+		if apierrors.IsNotFound(err) {
+			cm := &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      configMapName,
+					Namespace: gateway.Namespace,
+				},
+				Data: map[string]string{
+					TunnelConfigKey: initialConfig,
+				},
+			}
+			if err := ctrl.SetControllerReference(gateway, cm, r.Scheme); err != nil {
+				return err
+			}
+			log.Info("Creating tunnel config ConfigMap", "name", configMapName)
+			if err := r.Create(ctx, cm); err != nil {
+				return fmt.Errorf("failed to create config configmap: %w", err)
+			}
+		} else {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// deploymentForGatewayLocal returns a Deployment for local config mode.
+// cloudflared reads its ingress rules from a config file (mounted ConfigMap)
+// and credentials from a Secret, instead of using --token (remote mode).
+func (r *GatewayReconciler) deploymentForGatewayLocal(
+	gateway *gatewayv1.Gateway, tunnelID string) (*appsv1.Deployment, error) {
+	ls := labelsForGateway(gateway.Name)
+	replicas := int32(1)
+
+	image, err := imageForGateway()
+	if err != nil {
+		return nil, err
+	}
+
+	credSecretName := gateway.Name + tunnelCredentialsSuffix
+	configMapName := gateway.Name + tunnelConfigSuffix
+
+	dep := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      gateway.Name,
+			Namespace: gateway.Namespace,
+		},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: ls,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: ls,
+				},
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						NodeAffinity: &corev1.NodeAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+								NodeSelectorTerms: []corev1.NodeSelectorTerm{
+									{
+										MatchExpressions: []corev1.NodeSelectorRequirement{
+											{
+												Key:      "kubernetes.io/arch",
+												Operator: "In",
+												Values:   []string{"amd64", "arm64"},
+											},
+											{
+												Key:      "kubernetes.io/os",
+												Operator: "In",
+												Values:   []string{"linux"},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+					SecurityContext: &corev1.PodSecurityContext{
+						RunAsNonRoot: &[]bool{true}[0],
+						SeccompProfile: &corev1.SeccompProfile{
+							Type: corev1.SeccompProfileTypeRuntimeDefault,
+						},
+						Sysctls: []corev1.Sysctl{
+							{
+								Name:  "net.ipv4.ping_group_range",
+								Value: "0 0",
+							},
+						},
+					},
+					Volumes: []corev1.Volume{
+						{
+							Name: "credentials",
+							VolumeSource: corev1.VolumeSource{
+								Secret: &corev1.SecretVolumeSource{
+									SecretName: credSecretName,
+								},
+							},
+						},
+						{
+							Name: "config",
+							VolumeSource: corev1.VolumeSource{
+								ConfigMap: &corev1.ConfigMapVolumeSource{
+									LocalObjectReference: corev1.LocalObjectReference{
+										Name: configMapName,
+									},
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{{
+						Image:           image,
+						Name:            "gateway",
+						ImagePullPolicy: corev1.PullIfNotPresent,
+						SecurityContext: &corev1.SecurityContext{
+							RunAsNonRoot:             &[]bool{true}[0],
+							RunAsUser:                &[]int64{1001}[0],
+							AllowPrivilegeEscalation: &[]bool{false}[0],
+							Capabilities: &corev1.Capabilities{
+								Drop: []corev1.Capability{
+									"ALL",
+								},
+							},
+						},
+						Args: []string{
+							"tunnel",
+							"--config", "/etc/cloudflared/config/config.yml",
+							"--no-autoupdate",
+							"--metrics", "0.0.0.0:2000",
+							"run",
+						},
+						VolumeMounts: []corev1.VolumeMount{
+							{
+								Name:      "credentials",
+								MountPath: "/etc/cloudflared/credentials",
+								ReadOnly:  true,
+							},
+							{
+								Name:      "config",
+								MountPath: "/etc/cloudflared/config",
+								ReadOnly:  true,
+							},
+						},
+					}},
+				},
+			},
+			Strategy: appsv1.DeploymentStrategy{
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxUnavailable: &intstr.IntOrString{IntVal: 0},
+				},
+			},
+		},
+	}
+
 	if err := ctrl.SetControllerReference(gateway, dep, r.Scheme); err != nil {
 		return nil, err
 	}

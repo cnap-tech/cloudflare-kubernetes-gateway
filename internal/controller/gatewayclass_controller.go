@@ -59,9 +59,9 @@ func (r *GatewayClassReconciler) Reconcile(ctx context.Context, req ctrl.Request
 
 	// validate parameters
 	msg := ""
-	_, api, err := InitCloudflareApi(ctx, r.Client, gatewayClass.Name)
+	cfg, err := InitCloudflareApi(ctx, r.Client, gatewayClass.Name)
 	if err == nil {
-		token, err := api.User.Tokens.Verify(ctx)
+		token, err := cfg.Client.User.Tokens.Verify(ctx)
 		if err == nil {
 			if token.Status != "active" {
 				msg = fmt.Sprintf("Token status is %s, is not active. Please check the Cloudflare dashboard", token.Status)
@@ -106,7 +106,7 @@ func (r *GatewayClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&gatewayv1.GatewayClass{
 			Spec: gatewayv1.GatewayClassSpec{
-				ControllerName: "github.com/alodex/cloudflare-kubernetes-gateway",
+				ControllerName: controllerName,
 			},
 		}).
 		WithEventFilter(pred).

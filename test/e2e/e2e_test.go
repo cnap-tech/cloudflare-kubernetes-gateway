@@ -9,7 +9,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/alodex/cloudflare-kubernetes-gateway/test/utils"
+	"github.com/cnap-tech/cloudflare-kubernetes-gateway/test/utils"
 )
 
 const namespace = "cloudflare-gateway"
@@ -36,7 +36,7 @@ var _ = Describe("controller", Ordered, func() {
 			ExpectWithOffset(1, err).NotTo(HaveOccurred())
 
 			// projectimage stores the name of the image used in the example
-			var projectimage = "ghcr.io/alodex/cloudflare-kubernetes-gateway:" + version
+			var projectimage = "ghcr.io/cnap-tech/cloudflare-kubernetes-gateway:" + version
 
 			By("building the manager(Operator) image")
 			cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectimage))

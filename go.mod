@@ -1,4 +1,4 @@
-module github.com/alodex/cloudflare-kubernetes-gateway
+module github.com/cnap-tech/cloudflare-kubernetes-gateway
 
 go 1.23.0
 

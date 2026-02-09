@@ -3,7 +3,7 @@ kind: GatewayClass
 metadata:
   name: gateway-conformance
 spec:
-  controllerName: github.com/alodex/cloudflare-kubernetes-gateway
+  controllerName: github.com/cnap-tech/cloudflare-kubernetes-gateway
   parametersRef:
     group: ""
     kind: Secret

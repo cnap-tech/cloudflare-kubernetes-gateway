@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sort"
@@ -12,6 +13,9 @@ import (
 	"github.com/cloudflare/cloudflare-go/v2/dns"
 	"github.com/cloudflare/cloudflare-go/v2/zero_trust"
 	"github.com/cloudflare/cloudflare-go/v2/zones"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -33,6 +37,8 @@ type HTTPRouteReconciler struct {
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=gateways,verbs=list
 // +kubebuilder:rbac:groups=gateway.networking.k8s.io,resources=httproutes,verbs=list;watch
 // +kubebuilder:rbac:groups=core,resources=secrets,verbs=get
+// +kubebuilder:rbac:groups=core,resources=configmaps,verbs=get;update
+// +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;update
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -44,10 +50,8 @@ type HTTPRouteReconciler struct {
 func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
-	// TODO delete DNS records. load all hostnames via tunnel ID in comment? but can't get DNS zone...
 	target := &gatewayv1.HTTPRoute{}
 	gateways := []gatewayv1.Gateway{}
-	hostnames := []gatewayv1.Hostname{}
 	err := r.Get(ctx, req.NamespacedName, target)
 	if err == nil {
 		for _, parentRef := range target.Spec.ParentRefs {
@@ -65,8 +69,6 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			}
 			gateways = append(gateways, *gateway)
 		}
-
-		hostnames = target.Spec.Hostnames
 	} else {
 		gatewayList := &gatewayv1.GatewayList{}
 		if err := r.List(ctx, gatewayList); err != nil {
@@ -92,7 +94,7 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 
-		if gatewayClass.Spec.ControllerName != "github.com/alodex/cloudflare-kubernetes-gateway" {
+		if gatewayClass.Spec.ControllerName != controllerName {
 			continue
 		}
 
@@ -199,11 +201,16 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			return ctrl.Result{}, err
 		}
 
-		account, api, err := InitCloudflareApi(ctx, r.Client, string(gateway.Spec.GatewayClassName))
+		cfg, err := InitCloudflareApi(ctx, r.Client, string(gateway.Spec.GatewayClassName))
 		if err != nil {
 			log.Error(err, "Failed to initialize Cloudflare API")
 			return ctrl.Result{}, err
 		}
+		if cfg == nil {
+			continue
+		}
+		account := cfg.AccountID
+		api := cfg.Client
 
 		tunnels, err := api.ZeroTrust.Tunnels.List(ctx, zero_trust.TunnelListParams{
 			AccountID: cloudflare.String(account),
@@ -220,31 +227,64 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		tunnel := tunnels.Result[0]
 
-		_, err = api.ZeroTrust.Tunnels.Configurations.Update(ctx, tunnel.ID, zero_trust.TunnelConfigurationUpdateParams{
-			AccountID: cloudflare.String(account),
-			Config: cloudflare.F[zero_trust.TunnelConfigurationUpdateParamsConfig](
-				zero_trust.TunnelConfigurationUpdateParamsConfig{
-					Ingress: cloudflare.F[[]zero_trust.TunnelConfigurationUpdateParamsConfigIngress](ingress),
-				},
-			),
-		})
-		if err != nil {
-			log.Error(err, "Failed to update Tunnel configuration")
-			return ctrl.Result{}, err
+		// Collect all desired hostnames from the current ingress rules
+		desiredHostnames := map[string]bool{}
+		for _, rule := range ingress {
+			if rule.Hostname.Value != "" {
+				desiredHostnames[rule.Hostname.Value] = true
+			}
 		}
 
-		log.Info("Updated Tunnel configuration", "ingress", ingress)
+		// Update tunnel configuration based on config mode
+		if cfg.ConfigMode == ConfigModeLocal {
+			// Local mode: write ingress rules to a ConfigMap
+			if err := r.updateLocalTunnelConfig(ctx, gateway, tunnel.ID, ingress); err != nil {
+				log.Error(err, "Failed to update local tunnel config")
+				return ctrl.Result{}, err
+			}
+		} else {
+			// Remote mode: push config to Cloudflare API
+			_, err = api.ZeroTrust.Tunnels.Configurations.Update(ctx, tunnel.ID, zero_trust.TunnelConfigurationUpdateParams{
+				AccountID: cloudflare.String(account),
+				Config: cloudflare.F[zero_trust.TunnelConfigurationUpdateParamsConfig](
+					zero_trust.TunnelConfigurationUpdateParamsConfig{
+						Ingress: cloudflare.F[[]zero_trust.TunnelConfigurationUpdateParamsConfigIngress](ingress),
+					},
+				),
+			})
+			if err != nil {
+				log.Error(err, "Failed to update Tunnel configuration")
+				return ctrl.Result{}, err
+			}
+		}
 
-		// duplicate CNAMEs can't exist, so the last parentRef wins
-		for _, gwHostname := range hostnames {
-			hostname := string(gwHostname)
+		log.Info("Updated Tunnel configuration", "mode", cfg.ConfigMode, "ingress", ingress)
+
+		tunnelContent := fmt.Sprintf("%s.cfargotunnel.com", tunnel.ID)
+
+		// Tags for filtering and organizational metadata.
+		// Tags are key:value strings visible in the Cloudflare dashboard.
+		managedByTag := "managed-by:cnap-gateway"
+		tunnelTag := fmt.Sprintf("tunnel-id:%s", tunnel.ID)
+		gatewayTag := fmt.Sprintf("gateway:%s/%s", gateway.Namespace, gateway.Name)
+
+		// Create or update DNS records for all desired hostnames
+		for hostname := range desiredHostnames {
 			zoneID, err := FindZoneID(hostname, ctx, api, account)
 			if err != nil {
 				return ctrl.Result{}, err
 			}
 
-			content := fmt.Sprintf("%s.cfargotunnel.com", tunnel.ID)
-			comment := "Managed by github.com/alodex/cloudflare-kubernetes-gateway"
+			// Descriptive comment for the CF dashboard — shows K8s origin
+			comment := fmt.Sprintf("Routed via Cloudflare Tunnel to Gateway %s/%s [%s]",
+				gateway.Namespace, gateway.Name, controllerName)
+
+			tags := []dns.RecordTagsParam{
+				dns.RecordTagsParam(managedByTag),
+				dns.RecordTagsParam(tunnelTag),
+				dns.RecordTagsParam(gatewayTag),
+			}
+
 			records, _ := api.DNS.Records.List(ctx, dns.RecordListParams{
 				ZoneID:  cloudflare.String(zoneID),
 				Proxied: cloudflare.Bool(true),
@@ -258,12 +298,13 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 						Proxied: cloudflare.Bool(true),
 						Type:    cloudflare.F[dns.CNAMERecordType]("CNAME"),
 						Name:    cloudflare.String(hostname),
-						Content: cloudflare.F[interface{}](content),
+						Content: cloudflare.F[interface{}](tunnelContent),
 						Comment: cloudflare.String(comment),
+						Tags:    cloudflare.F(tags),
 					},
 				})
 				if err != nil {
-					log.Error(err, "Failed to create DNS record", hostname, content)
+					log.Error(err, "Failed to create DNS record", "hostname", hostname)
 					return ctrl.Result{}, err
 				}
 			} else {
@@ -273,20 +314,99 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 						Proxied: cloudflare.Bool(true),
 						Type:    cloudflare.F[dns.CNAMERecordType]("CNAME"),
 						Name:    cloudflare.String(hostname),
-						Content: cloudflare.F[interface{}](content),
+						Content: cloudflare.F[interface{}](tunnelContent),
 						Comment: cloudflare.String(comment),
+						Tags:    cloudflare.F(tags),
 					},
 				})
 				if err != nil {
-					log.Error(err, "Failed to update DNS record", hostname, content)
+					log.Error(err, "Failed to update DNS record", "hostname", hostname)
 					return ctrl.Result{}, err
 				}
 			}
 		}
-		log.Info("Updated DNS records", "hostnames", hostnames)
+
+		// Clean up stale DNS records using tag-based filtering.
+		// Only scans zones that have records tagged with our tunnel ID.
+		if err := r.cleanupStaleDnsRecords(ctx, api, account, tunnel.ID, managedByTag, tunnelTag, desiredHostnames); err != nil {
+			log.Error(err, "Failed to cleanup stale DNS records")
+			// Non-fatal: tunnel config is already updated, DNS cleanup is best-effort
+		}
+
+		log.Info("Updated DNS records", "desired", desiredHostnames)
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// updateLocalTunnelConfig writes the ingress rules to the gateway's config ConfigMap
+// and triggers a rolling restart of cloudflared by updating a hash annotation on the Deployment.
+func (r *HTTPRouteReconciler) updateLocalTunnelConfig(
+	ctx context.Context,
+	gateway gatewayv1.Gateway,
+	tunnelID string,
+	ingress []zero_trust.TunnelConfigurationUpdateParamsConfigIngress,
+) error {
+	log := log.FromContext(ctx)
+
+	// Build the config YAML
+	var configBuilder strings.Builder
+	configBuilder.WriteString(fmt.Sprintf("tunnel: %s\n", tunnelID))
+	configBuilder.WriteString("credentials-file: /etc/cloudflared/credentials/credentials.json\n")
+	configBuilder.WriteString("ingress:\n")
+	for _, rule := range ingress {
+		if rule.Hostname.Value != "" {
+			if rule.Path.Value != "" && rule.Path.Value != "/" {
+				configBuilder.WriteString(fmt.Sprintf("  - hostname: %s\n    path: %s\n    service: %s\n", rule.Hostname.Value, rule.Path.Value, rule.Service.Value))
+			} else {
+				configBuilder.WriteString(fmt.Sprintf("  - hostname: %s\n    service: %s\n", rule.Hostname.Value, rule.Service.Value))
+			}
+		} else {
+			// Catch-all rule (no hostname)
+			configBuilder.WriteString(fmt.Sprintf("  - service: %s\n", rule.Service.Value))
+		}
+	}
+	configYAML := configBuilder.String()
+
+	// Update the ConfigMap
+	configMapName := gateway.Name + tunnelConfigSuffix
+	cm := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Name: configMapName, Namespace: gateway.Namespace}, cm); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("Config ConfigMap not found, Gateway controller may not have created it yet", "name", configMapName)
+			return fmt.Errorf("config ConfigMap %s not found", configMapName)
+		}
+		return err
+	}
+
+	cm.Data[TunnelConfigKey] = configYAML
+	if err := r.Update(ctx, cm); err != nil {
+		return fmt.Errorf("failed to update config ConfigMap: %w", err)
+	}
+	log.Info("Updated local tunnel config ConfigMap", "name", configMapName)
+
+	// Trigger a rolling restart by updating a hash annotation on the Deployment.
+	// cloudflared doesn't auto-reload config files, so we need to restart the pods.
+	configHash := fmt.Sprintf("%x", sha256.Sum256([]byte(configYAML)))
+	dep := &appsv1.Deployment{}
+	if err := r.Get(ctx, types.NamespacedName{Name: gateway.Name, Namespace: gateway.Namespace}, dep); err != nil {
+		if apierrors.IsNotFound(err) {
+			log.Info("Deployment not found, skipping restart annotation")
+			return nil
+		}
+		return err
+	}
+
+	if dep.Spec.Template.Annotations == nil {
+		dep.Spec.Template.Annotations = map[string]string{}
+	}
+	dep.Spec.Template.Annotations["cfargotunnel.com/config-hash"] = configHash
+	if err := r.Update(ctx, dep); err != nil {
+		return fmt.Errorf("failed to update Deployment with config hash: %w", err)
+	}
+	log.Info("Updated Deployment config hash annotation to trigger restart", "hash", configHash[:12])
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -316,6 +436,64 @@ func sortIngressByPathSpecificity(ingress []zero_trust.TunnelConfigurationUpdate
 		}
 		return pathI < pathJ
 	})
+}
+
+// cleanupStaleDnsRecords removes DNS records that are managed by this controller
+// and belong to this tunnel, but are no longer in the desired hostname set.
+// Uses tag-based filtering for efficient lookup instead of scanning all records.
+func (r *HTTPRouteReconciler) cleanupStaleDnsRecords(
+	ctx context.Context,
+	api *cloudflare.Client,
+	accountID string,
+	tunnelID string,
+	managedByTag string,
+	tunnelTag string,
+	desiredHostnames map[string]bool,
+) error {
+	log := log.FromContext(ctx)
+
+	// List all zones in the account
+	zoneList, err := api.Zones.List(ctx, zones.ZoneListParams{
+		Account: cloudflare.F(zones.ZoneListParamsAccount{ID: cloudflare.String(accountID)}),
+		Status:  cloudflare.F(zones.ZoneListParamsStatusActive),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list zones: %w", err)
+	}
+
+	for _, zone := range zoneList.Result {
+		// Use tag-based filtering to find only records managed by us for this tunnel.
+		// This is much more efficient than scanning all CNAME records.
+		records, err := api.DNS.Records.List(ctx, dns.RecordListParams{
+			ZoneID: cloudflare.String(zone.ID),
+			Type:   cloudflare.F[dns.RecordListParamsType]("CNAME"),
+			Tag: cloudflare.F(dns.RecordListParamsTag{
+				Exact: cloudflare.String(tunnelTag),
+			}),
+			TagMatch: cloudflare.F[dns.RecordListParamsTagMatch]("all"),
+		})
+		if err != nil {
+			log.Error(err, "Failed to list DNS records for zone", "zone", zone.Name)
+			continue
+		}
+
+		for _, record := range records.Result {
+			// Only delete records not in the desired set
+			if desiredHostnames[record.Name] {
+				continue
+			}
+
+			log.Info("Deleting stale DNS record", "hostname", record.Name, "zone", zone.Name)
+			_, err := api.DNS.Records.Delete(ctx, record.ID, dns.RecordDeleteParams{
+				ZoneID: cloudflare.String(zone.ID),
+			})
+			if err != nil {
+				log.Error(err, "Failed to delete stale DNS record", "hostname", record.Name)
+			}
+		}
+	}
+
+	return nil
 }
 
 func FindZoneID(hostname string, ctx context.Context, api *cloudflare.Client, accountID string) (string, error) {
