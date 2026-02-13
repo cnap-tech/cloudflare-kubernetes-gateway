@@ -1,8 +1,14 @@
 # Cloudflare Kubernetes Gateway
 
+[![CI](https://github.com/cnap-tech/cloudflare-kubernetes-gateway/actions/workflows/ci.yaml/badge.svg)](https://github.com/cnap-tech/cloudflare-kubernetes-gateway/actions/workflows/ci.yaml)
+[![Gateway API Conformance](https://img.shields.io/badge/Gateway%20API-v1.4.1%20Conformance-green?logo=kubernetes&logoColor=white)](https://gateway-api.sigs.k8s.io/implementations/)
+[![Gateway API HTTP Profile](https://img.shields.io/badge/Profile-HTTP-blue?logo=kubernetes&logoColor=white)](https://gateway-api.sigs.k8s.io/concepts/conformance/#conformance-profiles)
+
 A Kubernetes [Gateway API](https://gateway-api.sigs.k8s.io/) controller that routes cluster traffic through [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — no public IPs or open firewall ports required.
 
 **How it works:** The controller watches GatewayClass, Gateway, and HTTPRoute resources. For each Gateway it creates a Cloudflare Tunnel and deploys a [cloudflared](https://github.com/cloudflare/cloudflared) client. HTTPRoutes are translated into tunnel ingress rules and DNS CNAME records pointing to the tunnel.
+
+**Conformance:** This controller passes the official [Gateway API conformance tests](https://gateway-api.sigs.k8s.io/concepts/conformance/) for the **GatewayHTTP** profile against Gateway API **v1.4.1**. Conformance tests run on every push in CI.
 
 ```mermaid
 flowchart LR
