@@ -6,7 +6,7 @@
 
 A Kubernetes [Gateway API](https://gateway-api.sigs.k8s.io/) controller that routes cluster traffic through [Cloudflare Tunnels](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/) — no public IPs or open firewall ports required.
 
-**How it works:** The controller watches GatewayClass, Gateway, and HTTPRoute resources. For each Gateway it creates a Cloudflare Tunnel and deploys a [cloudflared](https://github.com/cloudflare/cloudflared) client. HTTPRoutes are translated into tunnel ingress rules and DNS CNAME records pointing to the tunnel.
+**How it works:** The controller watches GatewayClass, Gateway, and HTTPRoute resources. For each Gateway it creates a Cloudflare Tunnel and deploys a [cloudflared](https://github.com/cloudflare/cloudflared) client. HTTPRoutes are translated into tunnel ingress rules. Hostname DNS, custom domains, and public route publication are owned by the platform routing layer.
 
 **Conformance:** This controller passes the official [Gateway API conformance tests](https://gateway-api.sigs.k8s.io/concepts/conformance/) for the **GatewayHTTP** profile against Gateway API **v1.4.1**. Conformance tests run on every push in CI.
 
@@ -32,7 +32,7 @@ kubectl apply -k github.com/kubernetes-sigs/gateway-api//config/crd?ref=v1.4.1
 kubectl apply -k github.com/cnap-tech/cloudflare-kubernetes-gateway//config/default?ref=main
 ```
 
-3. [Find your Cloudflare account ID](https://developers.cloudflare.com/fundamentals/setup/find-account-and-zone-ids/) and [create an API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) with **Cloudflare Tunnel Edit** and **Zone DNS Edit** permissions.
+3. [Find your Cloudflare account ID](https://developers.cloudflare.com/fundamentals/setup/find-account-and-zone-ids/) and [create an API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) with **Cloudflare Tunnel Edit** permissions. The controller does not require Zone DNS permissions.
 
 4. Create the credentials Secret:
 
@@ -102,7 +102,7 @@ kubectl apply -k github.com/cnap-tech/cloudflare-kubernetes-gateway//config/prom
 - **HTTPRoute** Service backendRefs (without filtering or weighting)
 - **Gateway** lifecycle management — tunnel creation, cloudflared deployment, cleanup on deletion
 - **GatewayClass** validation with Cloudflare API token verification
-- **DNS management** — automatic CNAME record creation and cleanup with metadata tags
+- **Tunnel endpoint management** — tunnel creation and ingress-rule reconciliation without per-hostname DNS writes
 - **Two config modes** — remote (Cloudflare dashboard) or local (ConfigMap-based)
 - **API proxy support** — route API calls through a custom base URL
 
@@ -123,14 +123,9 @@ The controller reads configuration from the Secret referenced by the GatewayClas
 
 **Local**: Ingress rules are written to a ConfigMap on the cluster. cloudflared reads from a mounted config file. The controller triggers a rolling restart when the config changes. Faster updates with no polling delay — useful for automated or high-frequency deployments.
 
-### DNS Record Metadata
+### DNS and Public Routing Ownership
 
-DNS records created by the controller include metadata for identification and filtering:
-
-- **Tags**: `managed-by:cnap-gateway`, `tunnel-id:<id>`, `gateway:<namespace>/<name>`
-- **Comment**: Human-readable description with Kubernetes context
-
-Stale DNS records are automatically cleaned up using tag-based filtering when hostnames are removed from routes.
+The controller does not create or clean up per-hostname DNS records. It owns the cluster-local tunnel endpoint and Cloudflare Tunnel ingress configuration only. Public hostnames, custom-domain validation, dispatcher KV entries, and stale-route tombstones are reconciled by the platform routing service.
 
 ## Standalone cloudflared
 

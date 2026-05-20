@@ -10,9 +10,7 @@ import (
 	"time"
 
 	"github.com/cloudflare/cloudflare-go/v2"
-	"github.com/cloudflare/cloudflare-go/v2/dns"
 	"github.com/cloudflare/cloudflare-go/v2/zero_trust"
-	"github.com/cloudflare/cloudflare-go/v2/zones"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -227,14 +225,6 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 		tunnel := tunnels.Result[0]
 
-		// Collect all desired hostnames from the current ingress rules
-		desiredHostnames := map[string]bool{}
-		for _, rule := range ingress {
-			if rule.Hostname.Value != "" {
-				desiredHostnames[rule.Hostname.Value] = true
-			}
-		}
-
 		// Update tunnel configuration based on config mode
 		if cfg.ConfigMode == ConfigModeLocal {
 			// Local mode: write ingress rules to a ConfigMap
@@ -259,81 +249,6 @@ func (r *HTTPRouteReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 
 		log.Info("Updated Tunnel configuration", "mode", cfg.ConfigMode, "ingress", ingress)
-
-		tunnelContent := fmt.Sprintf("%s.cfargotunnel.com", tunnel.ID)
-
-		// Tags for filtering and organizational metadata.
-		// Tags are key:value strings visible in the Cloudflare dashboard.
-		managedByTag := "managed-by:cnap-gateway"
-		tunnelTag := fmt.Sprintf("tunnel-id:%s", tunnel.ID)
-		gatewayTag := fmt.Sprintf("gateway:%s/%s", gateway.Namespace, gateway.Name)
-
-		// Create or update DNS records for all desired hostnames
-		for hostname := range desiredHostnames {
-			zoneID, err := FindZoneID(hostname, ctx, api, account)
-			if err != nil {
-				return ctrl.Result{}, err
-			}
-
-			// Descriptive comment for the CF dashboard — shows K8s origin
-			comment := fmt.Sprintf("Routed via Cloudflare Tunnel to Gateway %s/%s [%s]",
-				gateway.Namespace, gateway.Name, controllerName)
-
-			tags := []dns.RecordTagsParam{
-				managedByTag,
-				tunnelTag,
-				gatewayTag,
-			}
-
-			records, _ := api.DNS.Records.List(ctx, dns.RecordListParams{
-				ZoneID:  cloudflare.String(zoneID),
-				Proxied: cloudflare.Bool(true),
-				Type:    cloudflare.F[dns.RecordListParamsType]("CNAME"),
-				Name:    cloudflare.String(hostname),
-			})
-			if len(records.Result) == 0 {
-				_, err := api.DNS.Records.New(ctx, dns.RecordNewParams{
-					ZoneID: cloudflare.String(zoneID),
-					Record: dns.CNAMERecordParam{
-						Proxied: cloudflare.Bool(true),
-						Type:    cloudflare.F[dns.CNAMERecordType]("CNAME"),
-						Name:    cloudflare.String(hostname),
-						Content: cloudflare.F[interface{}](tunnelContent),
-						Comment: cloudflare.String(comment),
-						Tags:    cloudflare.F(tags),
-					},
-				})
-				if err != nil {
-					log.Error(err, "Failed to create DNS record", "hostname", hostname)
-					return ctrl.Result{}, err
-				}
-			} else {
-				_, err := api.DNS.Records.Update(ctx, records.Result[0].ID, dns.RecordUpdateParams{
-					ZoneID: cloudflare.String(zoneID),
-					Record: dns.CNAMERecordParam{
-						Proxied: cloudflare.Bool(true),
-						Type:    cloudflare.F[dns.CNAMERecordType]("CNAME"),
-						Name:    cloudflare.String(hostname),
-						Content: cloudflare.F[interface{}](tunnelContent),
-						Comment: cloudflare.String(comment),
-						Tags:    cloudflare.F(tags),
-					},
-				})
-				if err != nil {
-					log.Error(err, "Failed to update DNS record", "hostname", hostname)
-					return ctrl.Result{}, err
-				}
-			}
-		}
-
-		// Clean up stale DNS records using tag-based filtering.
-		// Only scans zones that have records tagged with our tunnel ID.
-		if err := r.cleanupStaleDnsRecords(ctx, api, account, tunnelTag, desiredHostnames); err != nil {
-			log.Error(err, "Failed to cleanup stale DNS records")
-			// Non-fatal: tunnel config is already updated, DNS cleanup is best-effort
-		}
-
-		log.Info("Updated DNS records", "desired", desiredHostnames)
 	}
 
 	return ctrl.Result{}, nil
@@ -436,82 +351,4 @@ func sortIngressByPathSpecificity(ingress []zero_trust.TunnelConfigurationUpdate
 		}
 		return pathI < pathJ
 	})
-}
-
-// cleanupStaleDnsRecords removes DNS records that are managed by this controller
-// and belong to this tunnel, but are no longer in the desired hostname set.
-// Uses tag-based filtering for efficient lookup instead of scanning all records.
-func (r *HTTPRouteReconciler) cleanupStaleDnsRecords(
-	ctx context.Context,
-	api *cloudflare.Client,
-	accountID string,
-	tunnelTag string,
-	desiredHostnames map[string]bool,
-) error {
-	log := log.FromContext(ctx)
-
-	// List all zones in the account
-	zoneList, err := api.Zones.List(ctx, zones.ZoneListParams{
-		Account: cloudflare.F(zones.ZoneListParamsAccount{ID: cloudflare.String(accountID)}),
-		Status:  cloudflare.F(zones.ZoneListParamsStatusActive),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to list zones: %w", err)
-	}
-
-	for _, zone := range zoneList.Result {
-		// Use tag-based filtering to find only records managed by us for this tunnel.
-		// This is much more efficient than scanning all CNAME records.
-		records, err := api.DNS.Records.List(ctx, dns.RecordListParams{
-			ZoneID: cloudflare.String(zone.ID),
-			Type:   cloudflare.F[dns.RecordListParamsType]("CNAME"),
-			Tag: cloudflare.F(dns.RecordListParamsTag{
-				Exact: cloudflare.String(tunnelTag),
-			}),
-			TagMatch: cloudflare.F[dns.RecordListParamsTagMatch]("all"),
-		})
-		if err != nil {
-			log.Error(err, "Failed to list DNS records for zone", "zone", zone.Name)
-			continue
-		}
-
-		for _, record := range records.Result {
-			// Only delete records not in the desired set
-			if desiredHostnames[record.Name] {
-				continue
-			}
-
-			log.Info("Deleting stale DNS record", "hostname", record.Name, "zone", zone.Name)
-			_, err := api.DNS.Records.Delete(ctx, record.ID, dns.RecordDeleteParams{
-				ZoneID: cloudflare.String(zone.ID),
-			})
-			if err != nil {
-				log.Error(err, "Failed to delete stale DNS record", "hostname", record.Name)
-			}
-		}
-	}
-
-	return nil
-}
-
-func FindZoneID(hostname string, ctx context.Context, api *cloudflare.Client, accountID string) (string, error) {
-	log := log.FromContext(ctx)
-	for parts := range len(strings.Split(hostname, ".")) {
-		zoneName := strings.Join(strings.Split(hostname, ".")[parts:], ".")
-		zones, err := api.Zones.List(ctx, zones.ZoneListParams{
-			Account: cloudflare.F(zones.ZoneListParamsAccount{ID: cloudflare.String(accountID)}),
-			Name:    cloudflare.String(zoneName),
-			Status:  cloudflare.F(zones.ZoneListParamsStatusActive),
-		})
-		if err != nil {
-			log.Error(err, "Failed to list DNS zones")
-			return "", err
-		}
-		if len(zones.Result) != 0 {
-			return zones.Result[0].ID, nil
-		}
-	}
-	err := errors.New("failed to discover DNS zone")
-	log.Error(err, "Failed to discover parent DNS zone. Ensure Zone.DNS permission is configured", "hostname", hostname)
-	return "", err
 }
