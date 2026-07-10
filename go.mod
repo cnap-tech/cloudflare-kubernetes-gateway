@@ -1,4 +1,4 @@
-module github.com/cnap-tech/cloudflare-kubernetes-gateway
+module github.com/akua-dev/cloudflare-kubernetes-gateway
 
 go 1.24.0
 

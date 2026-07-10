@@ -20,7 +20,7 @@ import (
 
 	gatewayv1 "sigs.k8s.io/gateway-api/apis/v1"
 
-	"github.com/cnap-tech/cloudflare-kubernetes-gateway/internal/controller"
+	"github.com/akua-dev/cloudflare-kubernetes-gateway/internal/controller"
 	// +kubebuilder:scaffold:imports
 )
 
