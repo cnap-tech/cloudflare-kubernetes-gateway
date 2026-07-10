@@ -1,6 +1,6 @@
 # Cloudflare Kubernetes Gateway
 
-[![CI](https://github.com/cnap-tech/cloudflare-kubernetes-gateway/actions/workflows/ci.yaml/badge.svg)](https://github.com/cnap-tech/cloudflare-kubernetes-gateway/actions/workflows/ci.yaml)
+[![CI](https://github.com/akua-dev/cloudflare-kubernetes-gateway/actions/workflows/ci.yaml/badge.svg)](https://github.com/akua-dev/cloudflare-kubernetes-gateway/actions/workflows/ci.yaml)
 [![Gateway API Conformance](https://img.shields.io/badge/Gateway%20API-v1.4.1%20Conformance-green?logo=kubernetes&logoColor=white)](https://gateway-api.sigs.k8s.io/implementations/)
 [![Gateway API HTTP Profile](https://img.shields.io/badge/Profile-HTTP-blue?logo=kubernetes&logoColor=white)](https://gateway-api.sigs.k8s.io/concepts/conformance/#conformance-profiles)
 
@@ -29,7 +29,7 @@ kubectl apply -k github.com/kubernetes-sigs/gateway-api//config/crd?ref=v1.4.1
 2. Install the controller:
 
 ```bash
-kubectl apply -k github.com/cnap-tech/cloudflare-kubernetes-gateway//config/default?ref=main
+kubectl apply -k github.com/akua-dev/cloudflare-kubernetes-gateway//config/default?ref=main
 ```
 
 3. [Find your Cloudflare account ID](https://developers.cloudflare.com/fundamentals/setup/find-account-and-zone-ids/) and [create an API token](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) with **Cloudflare Tunnel Edit** permissions. The controller does not require Zone DNS permissions.
@@ -50,7 +50,7 @@ kind: GatewayClass
 metadata:
   name: cloudflare
 spec:
-  controllerName: github.com/cnap-tech/cloudflare-kubernetes-gateway
+  controllerName: github.com/akua-dev/cloudflare-kubernetes-gateway
   parametersRef:
     group: ""
     kind: Secret
@@ -93,7 +93,7 @@ spec:
 7. (Optional) Install Prometheus ServiceMonitors for controller and cloudflared metrics:
 
 ```bash
-kubectl apply -k github.com/cnap-tech/cloudflare-kubernetes-gateway//config/prometheus?ref=main
+kubectl apply -k github.com/akua-dev/cloudflare-kubernetes-gateway//config/prometheus?ref=main
 ```
 
 ## Features

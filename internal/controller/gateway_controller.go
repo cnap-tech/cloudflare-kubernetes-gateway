@@ -32,7 +32,7 @@ import (
 
 const gatewayClassFinalizer = "cfargotunnel.com/finalizer"
 const gatewayFinalizer = "cfargotunnel.com/finalizer"
-const controllerName = "github.com/cnap-tech/cloudflare-kubernetes-gateway"
+const controllerName = "github.com/akua-dev/cloudflare-kubernetes-gateway"
 
 // Resource name suffixes for local config mode
 const tunnelCredentialsSuffix = "-tunnel-credentials"

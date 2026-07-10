@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/cnap-tech/cloudflare-kubernetes-gateway/test/utils"
+	"github.com/akua-dev/cloudflare-kubernetes-gateway/test/utils"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -35,10 +35,10 @@ func TestE2E(t *testing.T) {
 	opts.EnableAllSupportedFeatures = true
 	opts.Debug = true
 	opts.Implementation = conformancev1.Implementation{
-		Contact:      []string{"https://github.com/cnap-tech/cloudflare-kubernetes-gateway/issues/new/choose"},
-		Organization: "cnap-tech",
+		Contact:      []string{"https://github.com/akua-dev/cloudflare-kubernetes-gateway/issues/new/choose"},
+		Organization: "akua-dev",
 		Project:      "cloudflare-kubernetes-gateway",
-		URL:          "https://github.com/cnap-tech/cloudflare-kubernetes-gateway",
+		URL:          "https://github.com/akua-dev/cloudflare-kubernetes-gateway",
 		Version:      version,
 	}
 	opts.ReportOutputPath = "standard-" + version + "-default-report.yaml"

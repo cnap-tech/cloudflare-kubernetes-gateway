@@ -1,4 +1,4 @@
-IMG ?= ghcr.io/cnap-tech/cloudflare-kubernetes-gateway:latest
+IMG ?= ghcr.io/akua-dev/cloudflare-kubernetes-gateway:latest
 ENVTEST_K8S_VERSION = 1.31.0
 GATEWAY_API_VERSION = v1.4.1
 E2E_TIMEOUT ?= 15m
