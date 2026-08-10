@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -67,17 +68,27 @@ jobs:
     name: E2E Tests
     runs-on: akua-docker-ci-v2
     needs: check
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    env:
+      KMSG_HELPER_IMAGE: busybox:1.36.1@sha256:73aaf090f3d85aa34ee199857f03fa3a95c8ede2ffd4cc2cdb5b94e566b11662
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
+      - name: Prepare guest-local kmsg device
+        run: |
+          docker run --rm --privileged \
+            --volume /dev:/host-dev \
+            "$KMSG_HELPER_IMAGE" \
+            sh -c 'test -e /host-dev/kmsg || mknod /host-dev/kmsg c 1 11'
+
       - name: Create Kind cluster
         uses: helm/kind-action@v1
         with:
           cluster_name: kind
+          config: .github/kind-config.yaml
 
       - name: Run E2E tests
         continue-on-error: true
