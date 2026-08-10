@@ -53,16 +53,17 @@ jobs:
       - name: Build image
         run: make docker-build IMG=${{ env.IMG }}
         env:
-          IMG: ghcr.io/cnap-tech/cloudflare-kubernetes-gateway:${{ github.sha }}
+          IMG: ghcr.io/${{ github.repository }}:${{ github.sha }}
 
       - name: Push image
         if: github.ref == 'refs/heads/main'
         run: |
-          docker tag $IMG ghcr.io/cnap-tech/cloudflare-kubernetes-gateway:latest
-          docker push $IMG
-          docker push ghcr.io/cnap-tech/cloudflare-kubernetes-gateway:latest
+          docker tag "$IMG" "$LATEST"
+          docker push "$IMG"
+          docker push "$LATEST"
         env:
-          IMG: ghcr.io/cnap-tech/cloudflare-kubernetes-gateway:${{ github.sha }}
+          IMG: ghcr.io/${{ github.repository }}:${{ github.sha }}
+          LATEST: ghcr.io/${{ github.repository }}:latest
 
   e2e:
     name: E2E Tests
