@@ -4,6 +4,7 @@ go 1.24.0
 
 require (
 	github.com/cloudflare/cloudflare-go/v2 v2.4.0
+	github.com/cloudflare/cloudflare-go/v7 v7.6.0
 	github.com/onsi/ginkgo/v2 v2.22.2
 	github.com/onsi/gomega v1.36.2
 	k8s.io/api v0.34.1
